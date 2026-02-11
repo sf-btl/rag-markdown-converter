@@ -1,10 +1,10 @@
 """
-PDF Parser with complete text cleaning (ligatures + UTF-8 fix)
-Replace src/parsers/pdf_parser.py with this
+PDF Parser with table extraction and text cleaning
 """
 from pathlib import Path
 from .base_parser import BaseParser
 import fitz  # PyMuPDF
+import pdfplumber
 
 
 def fix_pdf_ligatures(text: str) -> str:
@@ -60,33 +60,80 @@ def fix_utf8_encoding(text: str) -> str:
     return text
 
 
+def table_to_markdown(table_data: list) -> str:
+    """Convert table data to Markdown table format"""
+    if not table_data or len(table_data) < 2:
+        return ""
+    
+    markdown = "\n"
+    
+    # Header row
+    headers = [str(cell or '').strip() for cell in table_data[0]]
+    markdown += "| " + " | ".join(headers) + " |\n"
+    
+    # Separator row
+    markdown += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+    
+    # Data rows
+    for row in table_data[1:]:
+        cells = [str(cell or '').strip() for cell in row]
+        # Pad row if needed
+        while len(cells) < len(headers):
+            cells.append('')
+        markdown += "| " + " | ".join(cells[:len(headers)]) + " |\n"
+    
+    markdown += "\n"
+    return markdown
+
+
 class PDFParser(BaseParser):
-    """Parser for PDF files using PyMuPDF with complete text cleaning"""
+    """Parser for PDF files with table extraction and text cleaning"""
     
     def _file_type_label(self) -> str:
         return "PDF"
     
     def parse(self, file_path: Path) -> str:
-        """Parse PDF file with PyMuPDF and clean all encoding issues"""
+        """Parse PDF with table extraction and encoding fixes"""
         
         content_parts = []
         
-        # Open PDF with PyMuPDF
-        doc = fitz.open(file_path)
-        
-        for page_num, page in enumerate(doc, 1):
-            # Extract text
-            text = page.get_text()
-            
-            # Clean ligature issues first
-            text = fix_pdf_ligatures(text)
-            
-            # Then fix UTF-8 encoding issues
-            text = fix_utf8_encoding(text)
-            
-            if text.strip():
-                content_parts.append(f"## Page {page_num}\n\n{text}\n")
-        
-        doc.close()
+        # Use pdfplumber for table detection
+        with pdfplumber.open(file_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                page_content = f"## Page {page_num}\n\n"
+                
+                # Try to extract tables
+                tables = page.extract_tables()
+                
+                if tables:
+                    # Page has tables - extract text first
+                    text = page.extract_text()
+                    
+                    if text:
+                        # Apply encoding fixes to text
+                        text = fix_pdf_ligatures(text)
+                        text = fix_utf8_encoding(text)
+                        page_content += text + "\n\n"
+                    
+                    # Add tables in Markdown format
+                    for i, table in enumerate(tables, 1):
+                        if len(tables) > 1:
+                            page_content += f"### Tableau {i}\n"
+                        page_content += table_to_markdown(table)
+                
+                else:
+                    # No tables - use PyMuPDF for better text extraction
+                    doc = fitz.open(file_path)
+                    fitz_page = doc[page_num - 1]
+                    text = fitz_page.get_text()
+                    doc.close()
+                    
+                    # Apply encoding fixes
+                    text = fix_pdf_ligatures(text)
+                    text = fix_utf8_encoding(text)
+                    page_content += text + "\n"
+                
+                if page_content.strip() != f"## Page {page_num}":
+                    content_parts.append(page_content)
         
         return "\n".join(content_parts)
